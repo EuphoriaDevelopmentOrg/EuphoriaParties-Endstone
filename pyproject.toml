@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "endstone-euphoria-parties"
+version = "1.0.0"
+description = "EuphoriaParties port for Endstone servers"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["endstone>=0.10,<0.11"]
+
+[project.optional-dependencies]
+mysql = ["mysql-connector-python>=8.0.0"]
+
+[project.entry-points."endstone"]
+euphoria-parties = "endstone_euphoria_parties:EuphoriaPartiesPlugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/endstone_euphoria_parties"]
