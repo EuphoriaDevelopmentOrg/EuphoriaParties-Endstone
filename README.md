@@ -19,17 +19,6 @@ This project ports the original PowerNukkitX plugin to the Endstone framework us
 - JSON persistence with periodic autosave
 - Optional MySQL persistence backend
 
-## Build
-
-```bash
-pip install -e .
-```
-
-To enable MySQL storage support:
-
-```bash
-pip install -e .[mysql]
-```
 
 ## Commands
 
@@ -38,15 +27,8 @@ pip install -e .[mysql]
 - `/coordinates` (or `/coords`)
 - `/compass`
 
-## Local Tests
-
-```bash
-python -m unittest discover -s tests -v
-```
-
 ## Notes
 
 - Config is generated at runtime at `plugins/euphoria-parties/config.toml`.
 - Default data is saved to `plugins/euphoria-parties/parties.json`.
 - To use MySQL, set `storage.provider = "mysql"` (or `storage.mysql.enabled = true`) and configure `storage.mysql.*` in `config.toml`.
-- The MySQL backend uses `mysql-connector-python` (installed via the `[mysql]` extra).
