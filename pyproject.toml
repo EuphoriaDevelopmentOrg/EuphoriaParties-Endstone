@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "endstone-euphoria-parties"
-version = "1.0.0"
+version = "1.0.1"
 description = "EuphoriaParties port for Endstone servers"
 readme = "README.md"
 requires-python = ">=3.10"

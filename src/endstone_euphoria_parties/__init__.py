@@ -1,7 +1,12 @@
+import json
+import re
 import shlex
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, get_type_hints
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 from uuid import UUID
 
 from endstone import Player
@@ -75,6 +80,12 @@ auto-save-interval = 6000
 cleanup-interval = 6000
 optimize-markers = true
 marker-move-threshold = 1.0
+
+[updates]
+enabled = true
+timeout-seconds = 3.0
+latest-url = "https://api.github.com/repos/EuphoriaDevelopmentOrg/EuphoriaParties-Endstone/releases/latest"
+releases-page = "https://github.com/EuphoriaDevelopmentOrg/EuphoriaParties-Endstone/releases/latest"
 
 [storage]
 provider = "json"
@@ -154,11 +165,11 @@ party-name-set = "\u00a7aParty name set to: \u00a7e{name}\u00a7a!"
 
 
 class EuphoriaPartiesPlugin(Plugin):
-    version = "1.0.0"
+    version = "1.0.1"
     api_version = "0.10"
     description = "A comprehensive party system for Endstone servers"
     authors = ["Euphoria Development Org", "Codex Port"]
-    website = "https://github.com/EuphoriaDevelopmentOrg/EuphoriaParties-PowerNukkitX"
+    website = "https://github.com/EuphoriaDevelopmentOrg/EuphoriaParties-Endstone/releases/tag/v1.0.1"
 
     commands = {
         "party": {
@@ -175,8 +186,8 @@ class EuphoriaPartiesPlugin(Plugin):
                 "/party name <party_name>",
                 "/party join <leader>",
                 "/party requests",
-                "/party acceptrequest <requester>",
-                "/party denyrequest <requester>",
+                "/party acceptrequest",
+                "/party denyrequest",
                 "/party sethome",
                 "/party home",
                 "/party warp",
@@ -185,7 +196,9 @@ class EuphoriaPartiesPlugin(Plugin):
                 "/party setrank <member> <rank>",
                 "/party ban <banned>",
                 "/party unban <unbanned>",
-                "/party ally <add|remove|list> [ally]",
+                "/party ally add",
+                "/party ally remove",
+                "/party ally list",
                 "/party stats",
                 "/party daily",
                 "/party scoreboard",
@@ -251,6 +264,7 @@ class EuphoriaPartiesPlugin(Plugin):
         self.achievement_manager: PartyAchievementManager
         self.leaderboard_manager: PartyLeaderboardManager
         self._autosave_task = None
+        self._update_check_thread: threading.Thread | None = None
         self._pending_respawns: dict[UUID, LocationData] = {}
         self._last_friendly_fire_notice_ms: dict[UUID, int] = {}
 
@@ -273,6 +287,7 @@ class EuphoriaPartiesPlugin(Plugin):
         self.scoreboard_manager.start()
         self.show_manager.start()
         self._start_autosave_task()
+        self._start_update_check()
 
         self.logger.info("EuphoriaParties (Endstone) enabled")
 
@@ -517,6 +532,76 @@ class EuphoriaPartiesPlugin(Plugin):
             if player_id in online_ids
         }
         self.party_manager.save_all()
+
+    def _start_update_check(self) -> None:
+        if not bool(self.get_config("updates.enabled", True)):
+            return
+        if self._update_check_thread is not None and self._update_check_thread.is_alive():
+            return
+        self._update_check_thread = threading.Thread(
+            target=self._run_update_check,
+            name="EuphoriaPartiesUpdateCheck",
+            daemon=True,
+        )
+        self._update_check_thread.start()
+
+    def _run_update_check(self) -> None:
+        url = str(
+            self.get_config(
+                "updates.latest-url",
+                "https://api.github.com/repos/EuphoriaDevelopmentOrg/EuphoriaParties-Endstone/releases/latest",
+            )
+        )
+        releases_page = str(
+            self.get_config(
+                "updates.releases-page",
+                "https://github.com/EuphoriaDevelopmentOrg/EuphoriaParties-Endstone/releases/latest",
+            )
+        )
+        try:
+            timeout = float(self.get_config("updates.timeout-seconds", 3.0))
+        except Exception:
+            timeout = 3.0
+
+        try:
+            request = Request(
+                url,
+                headers={
+                    "User-Agent": "EuphoriaParties-Endstone",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            with urlopen(request, timeout=timeout) as response:
+                payload = response.read().decode("utf-8")
+        except URLError as exc:
+            self.logger.warning(f"Update check failed: {exc}")
+            return
+        except Exception as exc:
+            self.logger.warning(f"Update check failed: {exc}")
+            return
+
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            self.logger.warning("Update check failed: invalid JSON response.")
+            return
+
+        tag = str(data.get("tag_name") or data.get("name") or "").strip()
+        latest_version = _parse_version(tag)
+        if not latest_version:
+            self.logger.warning("Update check failed: could not read latest version.")
+            return
+
+        current_version = _parse_version(self.version or "")
+        if _compare_versions(latest_version, current_version) > 0:
+            release_url = str(data.get("html_url") or releases_page)
+            self.logger.info(
+                f"Update available: v{_format_version(latest_version)} "
+                f"(current v{_format_version(current_version)}). {release_url}"
+            )
+            return
+
+        self.logger.info(f"Plugin is up to date (v{_format_version(current_version)}).")
 
     def _parse_payload(self, args: list[str]) -> list[str]:
         raw = " ".join(args).strip()
@@ -1647,6 +1732,33 @@ class EuphoriaPartiesPlugin(Plugin):
         if party.name:
             return f"{party.color}{party.icon} {party.name}"
         return f"Party #{str(party.id)[:8]}"
+
+
+def _parse_version(value: str) -> tuple[int, ...]:
+    if not value:
+        return ()
+    normalized = value.strip()
+    if normalized.startswith(("v", "V")):
+        normalized = normalized[1:]
+    parts = [int(match) for match in re.findall(r"\d+", normalized)]
+    return tuple(parts)
+
+
+def _compare_versions(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    max_len = max(len(left), len(right))
+    if max_len == 0:
+        return 0
+    left_full = left + (0,) * (max_len - len(left))
+    right_full = right + (0,) * (max_len - len(right))
+    if left_full == right_full:
+        return 0
+    return 1 if left_full > right_full else -1
+
+
+def _format_version(value: tuple[int, ...]) -> str:
+    if not value:
+        return "unknown"
+    return ".".join(str(part) for part in value)
 
 
 __all__ = ["EuphoriaPartiesPlugin"]
