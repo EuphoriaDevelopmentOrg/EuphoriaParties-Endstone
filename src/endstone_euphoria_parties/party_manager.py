@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from endstone.level import Location
@@ -34,13 +34,33 @@ class PartyManager:
         self._playtime_task = None
         self._cleanup_task = None
 
+        # Config value cache for hot paths
+        self._config_cache: dict[str, Any] = {}
+
         self.load_all()
 
     def start(self) -> None:
         self.stop()
+        self._refresh_config_cache()
         self._start_marker_task()
         self._start_playtime_task()
         self._start_cleanup_task()
+
+    def _refresh_config_cache(self) -> None:
+        """Cache frequently accessed config values for performance."""
+        self._config_cache = {
+            "max_members": int(self.plugin.get_config("party.max-members", 8)),
+            "max_pending_invites": int(self.plugin.get_config("party.max-pending-invites", 10)),
+            "invite_expiration_ms": int(self.plugin.get_config("party.invite-expiration-ms", 300_000)),
+            "command_cooldown_s": int(self.plugin.get_config("security.command-cooldown", 3)),
+            "teleport_cooldown_s": int(self.plugin.get_config("security.teleport-cooldown", 30)),
+            "max_teleport_distance": float(self.plugin.get_config("security.max-teleport-distance", 10_000.0)),
+            "marker_distance": float(self.plugin.get_config("party.marker-distance", 200.0)),
+            "marker_particle": str(self.plugin.get_config("party.marker-particle", "minecraft:heart_particle")),
+            "marker_particle_count": max(1, int(self.plugin.get_config("party.marker-particle-count", 3))),
+            "optimize_markers": bool(self.plugin.get_config("performance.optimize-markers", True)),
+            "marker_move_threshold": float(self.plugin.get_config("performance.marker-move-threshold", 1.0)),
+        }
 
     def stop(self) -> None:
         for task_name in ("_marker_task", "_playtime_task", "_cleanup_task"):
@@ -61,6 +81,7 @@ class PartyManager:
                 pass
 
         self.load_all()
+        self._refresh_config_cache()
         self.start()
 
     def shutdown(self) -> None:
@@ -171,8 +192,8 @@ class PartyManager:
         return party is not None and party.is_member(player_id)
 
     def invite_player(self, party: Party, player_id: UUID) -> bool:
-        expiration_ms = int(self.plugin.get_config("party.invite-expiration-ms", 300_000))
-        max_pending = int(self.plugin.get_config("party.max-pending-invites", 10))
+        expiration_ms = self._config_cache.get("invite_expiration_ms", 300_000)
+        max_pending = self._config_cache.get("max_pending_invites", 10)
 
         expired = party.clean_expired_invites(expiration_ms)
         changed = bool(expired)
@@ -206,7 +227,7 @@ class PartyManager:
         if not party.has_invite(player_id):
             return False
 
-        expiration_ms = int(self.plugin.get_config("party.invite-expiration-ms", 300_000))
+        expiration_ms = self._config_cache.get("invite_expiration_ms", 300_000)
         sent_at = party.invites.get(player_id, 0)
         if now_ms() - sent_at > expiration_ms:
             party.remove_invite(player_id)
@@ -214,7 +235,7 @@ class PartyManager:
             self.mark_dirty()
             return False
 
-        max_members = int(self.plugin.get_config("party.max-members", 8))
+        max_members = self._config_cache.get("max_members", 8)
         if len(party.members) >= max_members:
             return False
         if player_id in party.banned_players:
@@ -281,7 +302,7 @@ class PartyManager:
         if self.is_in_party(player.unique_id):
             return False
 
-        max_members = int(self.plugin.get_config("party.max-members", 8))
+        max_members = self._config_cache.get("max_members", 8)
         if len(party.members) >= max_members:
             return False
 
@@ -390,13 +411,23 @@ class PartyManager:
         if dimension is None:
             return None
 
-        return Location(dimension, data.x, data.y, data.z, data.pitch, data.yaw)
+        try:
+            return Location(
+                dimension=dimension,
+                x=data.x,
+                y=data.y,
+                z=data.z,
+                pitch=data.pitch,
+                yaw=data.yaw,
+            )
+        except TypeError:
+            return Location(dimension, data.x, data.y, data.z, data.pitch, data.yaw)
 
     def resolve_location_data(self, data: LocationData) -> Location | None:
         return self._resolve_location(data)
 
     def _can_teleport_to_location(self, player: "Player", location: Location) -> bool:
-        max_distance = float(self.plugin.get_config("security.max-teleport-distance", 10_000.0))
+        max_distance = self._config_cache.get("max_teleport_distance", 10_000.0)
         if player.dimension.name != location.dimension.name:
             return True
 
@@ -431,7 +462,7 @@ class PartyManager:
             return True
 
     def cleanup_expired_invites(self) -> None:
-        expiration_ms = int(self.plugin.get_config("party.invite-expiration-ms", 300_000))
+        expiration_ms = self._config_cache.get("invite_expiration_ms", 300_000)
         dirty = False
 
         for party in self.parties.values():
@@ -464,19 +495,21 @@ class PartyManager:
         self.last_marker_positions.pop(player_id, None)
 
     def broadcast_to_party(self, party: Party, message: str) -> None:
+        # Batch lookup of online players for better performance
+        online_players = {p.unique_id: p for p in self.plugin.server.online_players}
         for member_id in party.members:
-            member = self.plugin.server.get_player(member_id)
+            member = online_players.get(member_id)
             if member is not None:
                 member.send_message(message)
 
     def is_on_command_cooldown(self, player_id: UUID) -> bool:
-        cooldown_seconds = int(self.plugin.get_config("security.command-cooldown", 3))
+        cooldown_seconds = self._config_cache.get("command_cooldown_s", 3)
         if cooldown_seconds <= 0:
             return False
         return self.remaining_command_cooldown(player_id) > 0
 
     def remaining_command_cooldown(self, player_id: UUID) -> int:
-        cooldown_seconds = int(self.plugin.get_config("security.command-cooldown", 3))
+        cooldown_seconds = self._config_cache.get("command_cooldown_s", 3)
         last_used = self.last_command_use_ms.get(player_id)
         if last_used is None:
             return 0
@@ -487,13 +520,13 @@ class PartyManager:
         self.last_command_use_ms[player_id] = now_ms()
 
     def is_on_teleport_cooldown(self, player_id: UUID) -> bool:
-        cooldown_seconds = int(self.plugin.get_config("security.teleport-cooldown", 30))
+        cooldown_seconds = self._config_cache.get("teleport_cooldown_s", 30)
         if cooldown_seconds <= 0:
             return False
         return self.remaining_teleport_cooldown(player_id) > 0
 
     def remaining_teleport_cooldown(self, player_id: UUID) -> int:
-        cooldown_seconds = int(self.plugin.get_config("security.teleport-cooldown", 30))
+        cooldown_seconds = self._config_cache.get("teleport_cooldown_s", 30)
         last_used = self.last_teleport_ms.get(player_id)
         if last_used is None:
             return 0
@@ -518,13 +551,14 @@ class PartyManager:
         if not self.parties:
             return
 
-        max_distance = float(self.plugin.get_config("party.marker-distance", 200.0))
+        # Use cached config values for performance
+        max_distance = self._config_cache.get("marker_distance", 200.0)
         max_distance_sq = max_distance * max_distance
-        particle_name = str(self.plugin.get_config("party.marker-particle", "minecraft:heart_particle"))
-        particle_count = max(1, int(self.plugin.get_config("party.marker-particle-count", 3)))
+        particle_name = self._config_cache.get("marker_particle", "minecraft:heart_particle")
+        particle_count = self._config_cache.get("marker_particle_count", 3)
 
-        optimize = bool(self.plugin.get_config("performance.optimize-markers", True))
-        move_threshold = float(self.plugin.get_config("performance.marker-move-threshold", 1.0))
+        optimize = self._config_cache.get("optimize_markers", True)
+        move_threshold = self._config_cache.get("marker_move_threshold", 1.0)
         move_threshold_sq = move_threshold * move_threshold
 
         online_players = {player.unique_id: player for player in self.plugin.server.online_players}
@@ -548,10 +582,11 @@ class PartyManager:
                         if (dx * dx) + (dy * dy) + (dz * dz) < move_threshold_sq:
                             continue
 
+                viewer_dim = viewer.dimension.name
                 for target, target_loc in member_locations:
                     if target.unique_id == viewer.unique_id:
                         continue
-                    if viewer.dimension.name != target.dimension.name:
+                    if viewer_dim != target.dimension.name:
                         continue
 
                     dx = viewer_location.x - target_loc.x
@@ -560,11 +595,13 @@ class PartyManager:
                     if (dx * dx) + (dy * dy) + (dz * dz) > max_distance_sq:
                         continue
 
+                    # Spawn particles in a single batch
+                    target_y = target_loc.y + 2.5
                     for _ in range(particle_count):
                         viewer.spawn_particle(
                             particle_name,
                             target_loc.x,
-                            target_loc.y + 2.5,
+                            target_y,
                             target_loc.z,
                         )
 

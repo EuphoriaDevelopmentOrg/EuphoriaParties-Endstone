@@ -165,11 +165,11 @@ party-name-set = "\u00a7aParty name set to: \u00a7e{name}\u00a7a!"
 
 
 class EuphoriaPartiesPlugin(Plugin):
-    version = "1.0.1"
-    api_version = "0.10"
+    version = "2.0.3"
+    api_version = "0.11"
     description = "A comprehensive party system for Endstone servers"
-    authors = ["Euphoria Development Org", "Codex Port"]
-    website = "https://github.com/EuphoriaDevelopmentOrg/EuphoriaParties-Endstone/releases/tag/v1.0.1"
+    authors = ["Euphoria Development"]
+    website = "https://github.com/EuphoriaDevelopmentOrg/EuphoriaParties-Endstone/releases/latest"
 
     commands = {
         "party": {
@@ -232,7 +232,11 @@ class EuphoriaPartiesPlugin(Plugin):
         "euphoria.*": {
             "description": "All Euphoria plugin permissions",
             "default": "op",
-            "children": {"euphoria.party.*": True, "euphoria.hud.*": True},
+            "children": {
+                "euphoria.party.*": True,
+                "euphoria.party.admin": True,
+                "euphoria.hud.*": True,
+            },
         },
         "euphoria.party.*": {
             "description": "All party permissions",
@@ -244,15 +248,22 @@ class EuphoriaPartiesPlugin(Plugin):
                 "euphoria.party.kick": True,
                 "euphoria.party.promote": True,
                 "euphoria.party.sethome": True,
-                "euphoria.party.admin": False,
             },
         },
+        "euphoria.party.use": {"description": "Use party commands", "default": True},
+        "euphoria.party.create": {"description": "Create a party", "default": True},
+        "euphoria.party.invite": {"description": "Invite players to party", "default": True},
+        "euphoria.party.kick": {"description": "Kick players from party", "default": True},
+        "euphoria.party.promote": {"description": "Promote players and set ranks", "default": True},
+        "euphoria.party.sethome": {"description": "Set party home location", "default": True},
         "euphoria.party.admin": {"description": "Party administration permissions", "default": "op"},
         "euphoria.hud.*": {
             "description": "All HUD permissions",
             "default": True,
             "children": {"euphoria.hud.coordinates": True, "euphoria.hud.compass": True},
         },
+        "euphoria.hud.coordinates": {"description": "Toggle coordinate display", "default": True},
+        "euphoria.hud.compass": {"description": "Toggle compass display", "default": True},
     }
 
     def __init__(self) -> None:
@@ -793,7 +804,9 @@ class EuphoriaPartiesPlugin(Plugin):
             player.send_message(self.msg("already-invited", player=target.name))
             return True
 
-        if len(party.members) >= int(self.get_config("party.max-members", 8)):
+        # Check party limit (config is cached in party_manager)
+        max_members = self.party_manager._config_cache.get("max_members", 8)
+        if len(party.members) >= max_members:
             player.send_message(self.msg("party-full"))
             return True
 
@@ -1625,6 +1638,12 @@ class EuphoriaPartiesPlugin(Plugin):
         sender.send_message(f"\u00a7eAverage TPS: \u00a7f{self.server.average_tps:.2f}")
         sender.send_message(f"\u00a7eCurrent MSPT: \u00a7f{self.server.current_mspt:.2f}")
         sender.send_message(f"\u00a7eAverage MSPT: \u00a7f{self.server.average_mspt:.2f}")
+        current_tick_usage = getattr(self.server, "current_tick_usage", None)
+        if isinstance(current_tick_usage, (int, float)):
+            sender.send_message(f"\u00a7eCurrent Tick Usage: \u00a7f{current_tick_usage:.2f}")
+        average_tick_usage = getattr(self.server, "average_tick_usage", None)
+        if isinstance(average_tick_usage, (int, float)):
+            sender.send_message(f"\u00a7eAverage Tick Usage: \u00a7f{average_tick_usage:.2f}")
         sender.send_message("\u00a78================================")
         return True
 
